@@ -1,0 +1,31 @@
+# Сессионное/служебное
+.claude/
+.DS_Store
+
+# Секреты (не коммитим!)
+**/secrets.yaml
+**/secrets.h
+server/mosquitto/data/
+server/mosquitto/log/
+
+# Сборка прошивок (PlatformIO)
+.pio/
+**/.pio/
+*.bin
+*.elf
+*.hex
+*.map
+
+# Логи разведчика (могут быть большими) — храним вне git
+firmware/recon/logs/
+hardware/photos/
+*.csv.gz
+
+# Python (если появится бэкенд-прототип)
+__pycache__/
+*.pyc
+.venv/
+
+# Node (если появится PWA)
+node_modules/
+dist/
