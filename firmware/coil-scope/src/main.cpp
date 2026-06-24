@@ -1,37 +1,29 @@
 // coil-scope — «осциллограф из ESP32» для родного сигнала провода периметра.
 // Катушка (из витой пары) → GPIO36 (ADC1_CH0). Питание — повербанк по USB.
-// Веб-морда: http://<ip-esp>/  — форма сигнала + спектр (FFT) + пиковая частота.
-// MQTT: mower/mi302/recon/wire_freq, /wire_mag.
 //
-// Настройка БЕЗ пересборки (WiFiManager): при первом включении ESP поднимает
-// точку "coil-scope-setup". Подключись телефоном → откроется форма → впиши Wi-Fi
-// и адрес брокера. Данные сохраняются во flash. Чтобы сбросить — держи кнопку
-// BOOT (GPIO0) при включении.
+// СМОТРИМ ПРЯМО С ТЕЛЕФОНА: ESP поднимает свою Wi-Fi точку (без домашнего роутера).
+//   1) подключись телефоном к сети  "coil-scope"  (пароль: mower1234)
+//   2) открой в браузере  http://192.168.4.1/
+//   3) води катушкой у провода/базы — смотри форму, спектр и пиковую частоту.
 //
-// ВЕРСИЯ 1 (first light): цель — увидеть ЕСТЬ ли сигнал, на какой ЧАСТОТЕ, и форму.
+// ВЕРСИЯ 2 (AP-режим). Цель — увидеть ЕСТЬ ли сигнал, на какой ЧАСТОТЕ, и форму.
 
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WebServer.h>
-#include <WiFiManager.h>          // tzapu/WiFiManager
-#include <Preferences.h>
-#include <PubSubClient.h>
 #include <arduinoFFT.h>
 #include <driver/i2s.h>
 #include <driver/adc.h>
 
-// АЦП/выборка
+// --- точка доступа ---
+const char* AP_SSID = "coil-scope";
+const char* AP_PASS = "mower1234";     // мин. 8 символов; "" = открытая сеть
+
+// --- АЦП/выборка ---
 static const adc1_channel_t ADC_CH = ADC1_CHANNEL_0;   // GPIO36 (VP)
 static const i2s_port_t I2S_PORT  = I2S_NUM_0;
 static const uint32_t SAMPLE_RATE = 80000;             // Гц → Найквист 40 кГц
 static const uint16_t SAMPLES     = 1024;              // окно FFT (бин = 78.1 Гц)
-
-// настройки брокера (грузятся из flash / задаются с телефона)
-char     mqtt_host[40] = "192.168.1.10";
-char     mqtt_port_s[6] = "1883";
-char     mqtt_user[24] = "";
-char     mqtt_pass[24] = "";
-uint16_t mqtt_port = 1883;
 
 double vReal[SAMPLES];
 double vImag[SAMPLES];
@@ -41,10 +33,7 @@ volatile double g_peakFreq = 0, g_peakMag = 0;
 uint16_t g_wave[256];
 uint16_t g_spec[256];
 
-WebServer    server(80);
-WiFiClient   wifiClient;
-PubSubClient mqtt(wifiClient);
-Preferences  prefs;
+WebServer server(80);
 
 // ---------- I2S ADC ----------
 void adcSetup() {
@@ -101,7 +90,7 @@ void analyzeBlock() {
 const char* PAGE = R"HTML(<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>coil-scope</title>
 <style>body{font-family:sans-serif;background:#111;color:#eee;margin:8px}
 canvas{background:#000;display:block;margin:6px 0;width:100%;height:160px}
-b{color:#6f6;font-size:20px}</style>
+b{color:#6f6;font-size:22px}</style>
 <h3>coil-scope — сигнал провода</h3>
 <div>Пиковая частота: <b id=f>—</b> Гц &nbsp; амплитуда: <span id=m>—</span></div>
 <div>Форма сигнала:</div><canvas id=w width=512 height=160></canvas>
@@ -127,53 +116,13 @@ String jsonData() {
   return s;
 }
 
-void mqttEnsure() {
-  if (mqtt.connected()) return;
-  mqtt.setServer(mqtt_host, mqtt_port);
-  mqtt.connect("coil-scope", strlen(mqtt_user) ? mqtt_user : nullptr,
-                             strlen(mqtt_pass) ? mqtt_pass : nullptr);
-}
-
 void setup() {
   Serial.begin(115200);
 
-  // загрузить сохранённые настройки брокера
-  prefs.begin("cfg", false);
-  prefs.getString("mhost", "192.168.1.10").toCharArray(mqtt_host, sizeof(mqtt_host));
-  prefs.getString("mport", "1883").toCharArray(mqtt_port_s, sizeof(mqtt_port_s));
-  prefs.getString("muser", "").toCharArray(mqtt_user, sizeof(mqtt_user));
-  prefs.getString("mpass", "").toCharArray(mqtt_pass, sizeof(mqtt_pass));
-
-  // сброс настроек по кнопке BOOT (GPIO0) при включении
-  pinMode(0, INPUT_PULLUP);
-
-  WiFiManager wm;
-  if (digitalRead(0) == LOW) wm.resetSettings();
-
-  WiFiManagerParameter p_host("host", "MQTT broker IP", mqtt_host, sizeof(mqtt_host));
-  WiFiManagerParameter p_port("port", "MQTT port", mqtt_port_s, sizeof(mqtt_port_s));
-  WiFiManagerParameter p_user("user", "MQTT user (опц.)", mqtt_user, sizeof(mqtt_user));
-  WiFiManagerParameter p_pass("pass", "MQTT pass (опц.)", mqtt_pass, sizeof(mqtt_pass));
-  wm.addParameter(&p_host); wm.addParameter(&p_port);
-  wm.addParameter(&p_user); wm.addParameter(&p_pass);
-  wm.setConfigPortalTimeout(300);
-
-  // station-режим; если нет сохранённого Wi-Fi — поднимет точку "coil-scope-setup"
-  if (!wm.autoConnect("coil-scope-setup")) { delay(2000); ESP.restart(); }
-
-  // забрать введённые значения и сохранить
-  strncpy(mqtt_host, p_host.getValue(), sizeof(mqtt_host));
-  strncpy(mqtt_port_s, p_port.getValue(), sizeof(mqtt_port_s));
-  strncpy(mqtt_user, p_user.getValue(), sizeof(mqtt_user));
-  strncpy(mqtt_pass, p_pass.getValue(), sizeof(mqtt_pass));
-  mqtt_port = (uint16_t)atoi(mqtt_port_s);
-  prefs.putString("mhost", mqtt_host);
-  prefs.putString("mport", mqtt_port_s);
-  prefs.putString("muser", mqtt_user);
-  prefs.putString("mpass", mqtt_pass);
-
-  Serial.print("IP: "); Serial.println(WiFi.localIP());
-  Serial.printf("MQTT: %s:%u\n", mqtt_host, mqtt_port);
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP(AP_SSID, strlen(AP_PASS) >= 8 ? AP_PASS : nullptr);
+  Serial.print("AP \""); Serial.print(AP_SSID);
+  Serial.print("\"  ->  http://"); Serial.println(WiFi.softAPIP());  // 192.168.4.1
 
   server.on("/", []() { server.send(200, "text/html", PAGE); });
   server.on("/data", []() { server.send(200, "application/json", jsonData()); });
@@ -182,27 +131,16 @@ void setup() {
   adcSetup();
 }
 
-uint32_t lastPub = 0;
 void loop() {
   sampleBlock();
   analyzeBlock();
   server.handleClient();
-  if (millis() - lastPub > 500) {
-    lastPub = millis();
-    mqttEnsure();
-    if (mqtt.connected()) {
-      mqtt.publish("mower/mi302/recon/wire_freq", String(g_peakFreq, 1).c_str());
-      mqtt.publish("mower/mi302/recon/wire_mag",  String(g_peakMag, 0).c_str());
-    }
-    Serial.printf("peak=%.0f Hz  mag=%.0f\n", g_peakFreq, g_peakMag);
-  }
 }
 
 // ----------------- ЗАМЕТКИ ПО ИТЕРАЦИИ -----------------
 // 1) Пусто/шум в спектре: поднеси катушку ближе к проводу, поверни её, добавь витков.
 // 2) Без ОУ АЦП не видит нижнюю полуволну — частоту это не скрывает (пик в FFT есть),
 //    форма обрезана снизу. Полную форму добудем смещением Vcc/2 (2 резистора) позже.
-// 3) Пик «прилип» к краю/нулю — поменяй SAMPLE_RATE (40000/100000), чтобы родная
-//    частота попала в диапазон.
-// 4) Странные значения (перемешанные дорожки) — нюанс маски АЦП (buf[i]&0x0FFF) —
-//    скажи, поправлю.
+// 3) Пик «прилип» к краю/нулю — поменяй SAMPLE_RATE (40000/100000), скажи — пересоберу.
+// 4) Странные значения (перемешанные дорожки) — нюанс маски АЦП (buf[i]&0x0FFF) — скажу поправлю.
+// 5) Нужен MQTT в Home Assistant — добавим STA-режим (подключение к домашней сети) отдельно.
