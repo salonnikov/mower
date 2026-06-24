@@ -22,42 +22,37 @@
 
 > Внимание: GPIO36 — только вход (ADC1), это правильный пин. Не перепутай с 5В/3.3В.
 
-## Прошивка
+## Прошивка (плата в Mac, бинарь собран на Linux)
 
-### Шаг 1. Задать Wi-Fi и брокер (один раз)
-Wi-Fi/брокер вынесены в `secrets.h` (в git не попадает). Создай его из шаблона:
-```
-cd firmware/coil-scope/src
-cp secrets.h.example secrets.h
-# открой secrets.h и впиши: WIFI_SSID, WIFI_PASS, MQTT_HOST, (MQTT_USER/PASS)
-```
-Чтобы поменять сеть/брокер — правишь `secrets.h` и пересобираешь. (Альтернатива на
-будущее, чтобы менять сеть БЕЗ пересборки — WiFiManager: ESP поднимает свою точку,
-вводишь данные через веб-форму. Добавим, если надоест перешивать.)
+Wi-Fi и брокер в сборку НЕ вшиваются — настраиваются с телефона (WiFiManager).
+Готовый бинарь: `build/coil-scope-full.bin` (один файл, шить по адресу **0x0**).
 
-### Шаг 2. Собрать прошивку (в контейнере — рантаймы не на хосте)
+### Шаг 1. Залить бинарь из браузера (без установок на Mac)
+1. Воткни ESP32 в Mac по USB.
+2. Открой в **Chrome/Edge**: `https://espressif.github.io/esptool-js/`
+3. Baudrate 921600 → **Connect** → выбери порт платы.
+4. Add file → `coil-scope-full.bin`, offset **0x0** → **Program**.
+   (Если не коннектится — зажми BOOT на плате при подключении.)
+
+### Шаг 2. Настроить Wi-Fi и брокер с телефона
+1. После прошивки ESP поднимет точку **`coil-scope-setup`** — подключись к ней телефоном.
+2. Откроется форма (или зайди на `192.168.4.1`): выбери свою Wi-Fi сеть, введи пароль,
+   и заполни поля **MQTT broker IP / port** (логин/пароль — если брокер их требует).
+3. Save → ESP перезагрузится и зайдёт в твою сеть. Данные сохраняются во flash.
+   Сбросить настройки — держать кнопку **BOOT** при включении.
+
+### Шаг 3. Смотреть сигнал
+- Serial monitor (115200) или роутер покажут IP платы. Открой `http://<ip>/` с
+  телефона/компа (в той же сети) — форма сигнала + спектр + пиковая частота.
+- Частота/амплитуда также идут в MQTT (`mower/mi302/recon/wire_freq`, `/wire_mag`).
+
+## Пересборка (это делаю я, на Linux, в контейнере)
 ```
 cd firmware/coil-scope
-docker run --rm -v $PWD:/p -w /p infinitecoding/platformio-for-vscode pio run
-# результат: .pio/build/esp32dev/firmware.bin (+ bootloader.bin, partitions.bin)
+docker run --rm -v $PWD:/p -w /p -v /root/.pio-core:/root/.platformio \
+  python:3.12-slim bash -lc "pip install -q platformio && pio run"
+# затем merge в один файл build/coil-scope-full.bin (см. историю команд)
 ```
-
-### Шаг 3. Залить в ESP32 — зависит от того, КУДА воткнута плата
-- **Плата воткнута в этот Linux-хост** (где крутится сборка): заливаем из контейнера
-  с пробросом USB одной командой:
-  ```
-  docker run --rm --device=/dev/ttyUSB0 -v $PWD:/p -w /p \
-    infinitecoding/platformio-for-vscode pio run -t upload
-  ```
-  (порт может быть `/dev/ttyUSB0` или `/dev/ttyACM0` — проверь `ls /dev/tty*`).
-- **Плата воткнута в Mac** (Docker на macOS USB не пробрасывает!): заливаем из
-  **браузера** через WebSerial, без установки тулчейна на хост:
-  открой `https://espressif.github.io/esptool-js/` в Chrome/Edge → Connect → выбери
-  порт → залей `firmware.bin` (и при первом разе bootloader@0x1000, partitions@0x8000,
-  firmware@0x10000). Это не нарушает правило «без рантаймов на хосте» — флешит браузер.
-
-### Шаг 4. Проверить
-Serial monitor (115200) покажет IP. Открой `http://<ip>/` — увидишь форму и спектр.
 
 ## Как пользоваться
 
