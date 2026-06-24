@@ -24,10 +24,40 @@
 
 ## Прошивка
 
-1. В `src/main.cpp` впиши свои Wi-Fi и адрес MQTT-брокера.
-2. Собрать/прошить в контейнере:
-   `docker run --rm -v $PWD:/p -w /p infinitecoding/platformio-for-vscode pio run -t upload`
-3. Открой Serial monitor — увидишь IP. Зайди браузером на `http://<ip>/`.
+### Шаг 1. Задать Wi-Fi и брокер (один раз)
+Wi-Fi/брокер вынесены в `secrets.h` (в git не попадает). Создай его из шаблона:
+```
+cd firmware/coil-scope/src
+cp secrets.h.example secrets.h
+# открой secrets.h и впиши: WIFI_SSID, WIFI_PASS, MQTT_HOST, (MQTT_USER/PASS)
+```
+Чтобы поменять сеть/брокер — правишь `secrets.h` и пересобираешь. (Альтернатива на
+будущее, чтобы менять сеть БЕЗ пересборки — WiFiManager: ESP поднимает свою точку,
+вводишь данные через веб-форму. Добавим, если надоест перешивать.)
+
+### Шаг 2. Собрать прошивку (в контейнере — рантаймы не на хосте)
+```
+cd firmware/coil-scope
+docker run --rm -v $PWD:/p -w /p infinitecoding/platformio-for-vscode pio run
+# результат: .pio/build/esp32dev/firmware.bin (+ bootloader.bin, partitions.bin)
+```
+
+### Шаг 3. Залить в ESP32 — зависит от того, КУДА воткнута плата
+- **Плата воткнута в этот Linux-хост** (где крутится сборка): заливаем из контейнера
+  с пробросом USB одной командой:
+  ```
+  docker run --rm --device=/dev/ttyUSB0 -v $PWD:/p -w /p \
+    infinitecoding/platformio-for-vscode pio run -t upload
+  ```
+  (порт может быть `/dev/ttyUSB0` или `/dev/ttyACM0` — проверь `ls /dev/tty*`).
+- **Плата воткнута в Mac** (Docker на macOS USB не пробрасывает!): заливаем из
+  **браузера** через WebSerial, без установки тулчейна на хост:
+  открой `https://espressif.github.io/esptool-js/` в Chrome/Edge → Connect → выбери
+  порт → залей `firmware.bin` (и при первом разе bootloader@0x1000, partitions@0x8000,
+  firmware@0x10000). Это не нарушает правило «без рантаймов на хосте» — флешит браузер.
+
+### Шаг 4. Проверить
+Serial monitor (115200) покажет IP. Открой `http://<ip>/` — увидишь форму и спектр.
 
 ## Как пользоваться
 

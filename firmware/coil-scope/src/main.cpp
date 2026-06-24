@@ -16,14 +16,9 @@
 #include <driver/i2s.h>
 #include <driver/adc.h>
 
-// ---------------- НАСТРОЙКИ (заполнить) ----------------
-const char* WIFI_SSID = "YOUR_WIFI";
-const char* WIFI_PASS = "YOUR_PASS";
-const char* MQTT_HOST = "192.168.1.10";   // адрес твоего брокера
-const uint16_t MQTT_PORT = 1883;
-const char* MQTT_USER = "";               // пусто если без авторизации
-const char* MQTT_PASS = "";
-// -------------------------------------------------------
+// Wi-Fi и брокер задаются в secrets.h (скопируй secrets.h.example → secrets.h).
+// secrets.h в git НЕ попадает (см. .gitignore).
+#include "secrets.h"
 
 // АЦП/выборка
 static const adc1_channel_t ADC_CH = ADC1_CHANNEL_0;   // GPIO36 (VP)
