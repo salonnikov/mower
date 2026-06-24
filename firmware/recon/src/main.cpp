@@ -1,27 +1,27 @@
 // recon/main.cpp — «пассажир-разведчик»: автономный логгер на ESP32.
-// Косилку НЕ трогает. Слушает: катушку провода, доплер-радар, IMU. Пишет SD + MQTT.
-// СКЕЛЕТ: тела модулей дописываются по мере появления железа. См. docs/07.
+// Косилку НЕ трогает. Слушает: катушку провода + IMU. Пишет SD + MQTT. См. docs/07.
+// СКЕЛЕТ: тела модулей дописываются по мере появления железа.
 
 #include <Arduino.h>
 
 // --- Заглушки сенсоров ---
 namespace coil  { void begin(); float freqHz(); float magnitude(); bool symmetric(); }  // родной сигнал провода
-namespace radar { void begin(); float speedMps(); }                                      // скорость по земле (доплер)
 namespace imu   { void begin(); float turnRateDps(); float tiltDeg(); }
 namespace sdlog { void begin(); void writeRaw(); }                                        // сырьё на microSD
 namespace net   { void begin(); void publish(const char* topic, float v); void event(const char* e); }
 
 // ============ Core0: сбор данных (быстро, локально) ============
 void sampleTask(void*) {
-  coil::begin(); radar::begin(); imu::begin(); sdlog::begin();
+  coil::begin(); imu::begin(); sdlog::begin();
   for (;;) {
-    sdlog::writeRaw();                 // сырые семплы катушки/радара (ADC-DMA) на SD
+    sdlog::writeRaw();                 // сырые семплы катушки (ADC-DMA) на SD
 
-    float v   = radar::speedMps();     // скорость без проскальзывания колёс
-    float turn= imu::turnRateDps();
-    // Сигнатура «кручения на месте»: стоим (v~0), но крутимся (|turn| большой)
+    float turn = imu::turnRateDps();
+    // Кандидат «кручения на месте»: продолжительный большой turn_rate.
+    // Знак скорости/прогресса в логгере не меряем — спин подтверждаем при анализе,
+    // сопоставив этот эпизод с сигналом катушки в тот же момент.
     static uint32_t spinTicks = 0;
-    if (v < 0.05f && fabsf(turn) > 30.0f) { if (++spinTicks == 25) net::event("spin_detected"); }
+    if (fabsf(turn) > 30.0f) { if (++spinTicks == 75) net::event("spin_suspected"); } // ~1.5 с
     else spinTicks = 0;
 
     vTaskDelay(pdMS_TO_TICKS(20));
@@ -32,8 +32,8 @@ void sampleTask(void*) {
 void netTask(void*) {
   net::begin();
   for (;;) {
-    net::publish("mower/mi302/recon/speed",     radar::speedMps());
     net::publish("mower/mi302/recon/turn_rate", imu::turnRateDps());
+    net::publish("mower/mi302/recon/tilt",      imu::tiltDeg());
     net::publish("mower/mi302/recon/wire_freq", coil::freqHz());
     net::publish("mower/mi302/recon/wire_mag",  coil::magnitude());
     vTaskDelay(pdMS_TO_TICKS(500));
