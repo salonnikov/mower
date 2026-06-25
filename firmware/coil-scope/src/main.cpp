@@ -13,6 +13,7 @@
 #include <WebServer.h>
 #include <ESPmDNS.h>
 #include <Wire.h>
+#include <SPI.h>
 #include <arduinoFFT.h>
 #include <driver/i2s.h>
 #include <driver/adc.h>
@@ -43,6 +44,20 @@ uint8_t  imuAddr = 0;           // 0 = не найден; иначе 0x6A/0x6B
 uint8_t  imuWho  = 0;           // WHO_AM_I
 char     g_i2c[80] = "";        // что нашли на шине I2C
 char     g_order[28] = "21/22"; // рабочий порядок пинов SDA/SCL
+int      g_spiWho = -1;          // WHO_AM_I по SPI (-1 = не пробовали)
+
+// --- SPI-пины для проверки чипа (VSPI): SCK=18, MISO=19, MOSI=23, CS=5 ---
+static const int SPI_SCK=18, SPI_MISO=19, SPI_MOSI=23, SPI_CS=5;
+void spiCheck() {
+  pinMode(SPI_CS, OUTPUT); digitalWrite(SPI_CS, HIGH);
+  SPI.begin(SPI_SCK, SPI_MISO, SPI_MOSI, SPI_CS);
+  SPI.beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE3)); // LSM6DS3 = mode 3
+  digitalWrite(SPI_CS, LOW);
+  SPI.transfer(0x8F);                       // 0x0F | 0x80 = чтение WHO_AM_I
+  g_spiWho = SPI.transfer(0x00);
+  digitalWrite(SPI_CS, HIGH);
+  SPI.endTransaction();
+}
 float    g_ax=0, g_ay=0, g_az=0;       // g
 float    g_gx=0, g_gy=0, g_gz=0;       // dps
 float    g_tilt=0;                     // угол от вертикали, °
@@ -179,6 +194,7 @@ b{color:#6f6;font-size:22px}.r{color:#9cf}</style>
 <div>Спектр (0…40 кГц):</div><canvas id=s width=512 height=150></canvas>
 <h4>IMU <span id=imu class=r></span></h4>
 <div class=r>I2C на шине: <span id=bus>—</span> &nbsp; порядок: <span id=ord>—</span></div>
+<div class=r>SPI WHO_AM_I: <b id=spi>—</b> (ждём 0x69 = чип жив)</div>
 <div>Наклон: <b id=t>—</b>° &nbsp; угл.скорость Z: <span id=gz>—</span> °/с</div>
 <div class=r>accel g: <span id=a>—</span> &nbsp; gyro °/с: <span id=g>—</span></div>
 <script>
@@ -190,6 +206,7 @@ ip.textContent=d.ip;f.textContent=d.freq.toFixed(0);m.textContent=d.mag.toFixed(
 hf.textContent=d.hfreq.toFixed(0);hm.textContent=d.hmag.toFixed(0);
 draw(w,d.wave,4096);draw(s,d.spec,Math.max(...d.spec,1));
 imu.textContent=d.imu?('('+d.imu+')'):'НЕ НАЙДЕН';bus.textContent=d.bus;ord.textContent=d.ord;
+spi.textContent='0x'+(d.spi<0?'--':('0'+(d.spi&255).toString(16)).slice(-2));
 t.textContent=d.tilt.toFixed(0);gz.textContent=d.gz.toFixed(1);
 a.textContent=d.ax.toFixed(2)+' / '+d.ay.toFixed(2)+' / '+d.az.toFixed(2);
 g.textContent=d.gx.toFixed(1)+' / '+d.gy.toFixed(1)+' / '+d.gz.toFixed(1);}catch(e){}}
@@ -200,7 +217,7 @@ String jsonData() {
   String s = "{\"ip\":\"" + g_staIp + "\",\"freq\":" + String(g_peakFreq,1) + ",\"mag\":" + String(g_peakMag,0);
   s += ",\"hfreq\":" + String(g_holdFreq,1) + ",\"hmag\":" + String(g_holdMag,0);
   s += ",\"imu\":\"" + (imuAddr ? String("0x")+String(imuWho,HEX) : String("")) + "\"";
-  s += ",\"bus\":\"" + String(g_i2c) + "\",\"ord\":\"" + String(g_order) + "\"";
+  s += ",\"bus\":\"" + String(g_i2c) + "\",\"ord\":\"" + String(g_order) + "\",\"spi\":" + String(g_spiWho);
   s += ",\"tilt\":" + String(g_tilt,1) + ",\"ax\":" + String(g_ax,2) + ",\"ay\":" + String(g_ay,2) + ",\"az\":" + String(g_az,2);
   s += ",\"gx\":" + String(g_gx,1) + ",\"gy\":" + String(g_gy,1) + ",\"gz\":" + String(g_gz,1);
   s += ",\"wave\":[";
@@ -234,7 +251,9 @@ void setup() {
 
   imuSetup();
   if (imuAddr) Serial.printf("IMU LSM6DS3 на 0x%02X (WHO=0x%02X)\n", imuAddr, imuWho);
-  else         Serial.println("IMU не найден (проверь SDA=21/SCL=22, CS->3V3, питание)");
+  else         Serial.println("IMU не найден по I2C");
+  spiCheck();                                  // проверка чипа по SPI
+  Serial.printf("SPI WHO_AM_I = 0x%02X (ждём 0x69)\n", g_spiWho);
   adcSetup();
 }
 
