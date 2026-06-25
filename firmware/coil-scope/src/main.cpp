@@ -30,6 +30,7 @@ static const uint16_t SAMPLES     = 1024;
 static const int PIN_SDA = 21, PIN_SCL = 22;
 uint8_t  imuAddr = 0;           // 0 = не найден; иначе 0x6A/0x6B
 uint8_t  imuWho  = 0;           // WHO_AM_I
+char     g_i2c[80] = "";        // что нашли на шине I2C
 float    g_ax=0, g_ay=0, g_az=0;       // g
 float    g_gx=0, g_gy=0, g_gz=0;       // dps
 float    g_tilt=0;                     // угол от вертикали, °
@@ -60,9 +61,22 @@ int16_t imuRead16(uint8_t reg) {
   uint8_t lo = Wire.read(), hi = Wire.read();
   return (int16_t)((hi << 8) | lo);
 }
+void i2cScan() {
+  int n = 0; g_i2c[0] = 0;
+  for (uint8_t a = 1; a < 127; a++) {
+    Wire.beginTransmission(a);
+    if (Wire.endTransmission() == 0) {
+      char t[8]; snprintf(t, sizeof(t), "0x%02X ", a);
+      strncat(g_i2c, t, sizeof(g_i2c) - strlen(g_i2c) - 1);
+      n++;
+    }
+  }
+  if (n == 0) strcpy(g_i2c, "пусто (ничего не отвечает)");
+}
 void imuSetup() {
   Wire.begin(PIN_SDA, PIN_SCL);
-  Wire.setClock(400000);
+  Wire.setClock(100000);                       // ниже скорость — терпимее к слабым подтяжкам
+  i2cScan();                                    // что вообще есть на шине
   for (uint8_t a = 0x6A; a <= 0x6B; a++) {
     uint8_t who = imuRead8(a, 0x0F);          // WHO_AM_I
     if (who == 0x69 || who == 0x6A) { imuAddr = a; imuWho = who; break; }
@@ -145,6 +159,7 @@ b{color:#6f6;font-size:22px}.r{color:#9cf}</style>
 <div>Форма:</div><canvas id=w width=512 height=150></canvas>
 <div>Спектр (0…40 кГц):</div><canvas id=s width=512 height=150></canvas>
 <h4>IMU <span id=imu class=r></span></h4>
+<div class=r>I2C на шине: <span id=bus>—</span></div>
 <div>Наклон: <b id=t>—</b>° &nbsp; угл.скорость Z: <span id=gz>—</span> °/с</div>
 <div class=r>accel g: <span id=a>—</span> &nbsp; gyro °/с: <span id=g>—</span></div>
 <script>
@@ -155,7 +170,7 @@ async function tick(){try{let d=await(await fetch('/data')).json();
 f.textContent=d.freq.toFixed(0);m.textContent=d.mag.toFixed(0);
 hf.textContent=d.hfreq.toFixed(0);hm.textContent=d.hmag.toFixed(0);
 draw(w,d.wave,4096);draw(s,d.spec,Math.max(...d.spec,1));
-imu.textContent=d.imu?('('+d.imu+')'):'НЕ НАЙДЕН';
+imu.textContent=d.imu?('('+d.imu+')'):'НЕ НАЙДЕН';bus.textContent=d.bus;
 t.textContent=d.tilt.toFixed(0);gz.textContent=d.gz.toFixed(1);
 a.textContent=d.ax.toFixed(2)+' / '+d.ay.toFixed(2)+' / '+d.az.toFixed(2);
 g.textContent=d.gx.toFixed(1)+' / '+d.gy.toFixed(1)+' / '+d.gz.toFixed(1);}catch(e){}}
@@ -166,6 +181,7 @@ String jsonData() {
   String s = "{\"freq\":" + String(g_peakFreq,1) + ",\"mag\":" + String(g_peakMag,0);
   s += ",\"hfreq\":" + String(g_holdFreq,1) + ",\"hmag\":" + String(g_holdMag,0);
   s += ",\"imu\":\"" + (imuAddr ? String("0x")+String(imuWho,HEX) : String("")) + "\"";
+  s += ",\"bus\":\"" + String(g_i2c) + "\"";
   s += ",\"tilt\":" + String(g_tilt,1) + ",\"ax\":" + String(g_ax,2) + ",\"ay\":" + String(g_ay,2) + ",\"az\":" + String(g_az,2);
   s += ",\"gx\":" + String(g_gx,1) + ",\"gy\":" + String(g_gy,1) + ",\"gz\":" + String(g_gz,1);
   s += ",\"wave\":[";
