@@ -11,14 +11,25 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WebServer.h>
+#include <ESPmDNS.h>
 #include <Wire.h>
 #include <arduinoFFT.h>
 #include <driver/i2s.h>
 #include <driver/adc.h>
 
-// --- точка доступа ---
+// Домашний Wi-Fi (опц.) — из secrets.h (в git нет). Без него — только своя точка.
+#if __has_include("secrets.h")
+  #include "secrets.h"
+#endif
+#ifndef STA_SSID
+  #define STA_SSID ""
+  #define STA_PASS ""
+#endif
+
+// --- точка доступа (всегда поднимается, как запасной канал) ---
 const char* AP_SSID = "coil-scope";
 const char* AP_PASS = "mower1234";     // мин. 8 символов; "" = открытая сеть
+String g_staIp = "—";                  // IP в домашней сети
 
 // --- АЦП/выборка катушки ---
 static const adc1_channel_t ADC_CH = ADC1_CHANNEL_0;   // GPIO36 (VP)
@@ -31,6 +42,7 @@ static const int PIN_SDA = 21, PIN_SCL = 22;
 uint8_t  imuAddr = 0;           // 0 = не найден; иначе 0x6A/0x6B
 uint8_t  imuWho  = 0;           // WHO_AM_I
 char     g_i2c[80] = "";        // что нашли на шине I2C
+char     g_order[28] = "21/22"; // рабочий порядок пинов SDA/SCL
 float    g_ax=0, g_ay=0, g_az=0;       // g
 float    g_gx=0, g_gy=0, g_gz=0;       // dps
 float    g_tilt=0;                     // угол от вертикали, °
@@ -61,7 +73,7 @@ int16_t imuRead16(uint8_t reg) {
   uint8_t lo = Wire.read(), hi = Wire.read();
   return (int16_t)((hi << 8) | lo);
 }
-void i2cScan() {
+int i2cScan() {
   int n = 0; g_i2c[0] = 0;
   for (uint8_t a = 1; a < 127; a++) {
     Wire.beginTransmission(a);
@@ -72,11 +84,17 @@ void i2cScan() {
     }
   }
   if (n == 0) strcpy(g_i2c, "пусто (ничего не отвечает)");
+  return n;
 }
 void imuSetup() {
-  Wire.begin(PIN_SDA, PIN_SCL);
-  Wire.setClock(100000);                       // ниже скорость — терпимее к слабым подтяжкам
-  i2cScan();                                    // что вообще есть на шине
+  // пробуем оба порядка: 21=SDA/22=SCL и наоборот (вдруг провода перепутаны)
+  Wire.end(); Wire.begin(21, 22); Wire.setClock(100000);
+  int n = i2cScan();
+  if (n == 0) {
+    Wire.end(); Wire.begin(22, 21); Wire.setClock(100000);
+    int n2 = i2cScan();
+    if (n2 > 0) strcpy(g_order, "22/21 (провода перепутаны!)");
+  }
   for (uint8_t a = 0x6A; a <= 0x6B; a++) {
     uint8_t who = imuRead8(a, 0x0F);          // WHO_AM_I
     if (who == 0x69 || who == 0x6A) { imuAddr = a; imuWho = who; break; }
@@ -159,7 +177,7 @@ b{color:#6f6;font-size:22px}.r{color:#9cf}</style>
 <div>Форма:</div><canvas id=w width=512 height=150></canvas>
 <div>Спектр (0…40 кГц):</div><canvas id=s width=512 height=150></canvas>
 <h4>IMU <span id=imu class=r></span></h4>
-<div class=r>I2C на шине: <span id=bus>—</span></div>
+<div class=r>I2C на шине: <span id=bus>—</span> &nbsp; порядок: <span id=ord>—</span></div>
 <div>Наклон: <b id=t>—</b>° &nbsp; угл.скорость Z: <span id=gz>—</span> °/с</div>
 <div class=r>accel g: <span id=a>—</span> &nbsp; gyro °/с: <span id=g>—</span></div>
 <script>
@@ -170,7 +188,7 @@ async function tick(){try{let d=await(await fetch('/data')).json();
 f.textContent=d.freq.toFixed(0);m.textContent=d.mag.toFixed(0);
 hf.textContent=d.hfreq.toFixed(0);hm.textContent=d.hmag.toFixed(0);
 draw(w,d.wave,4096);draw(s,d.spec,Math.max(...d.spec,1));
-imu.textContent=d.imu?('('+d.imu+')'):'НЕ НАЙДЕН';bus.textContent=d.bus;
+imu.textContent=d.imu?('('+d.imu+')'):'НЕ НАЙДЕН';bus.textContent=d.bus;ord.textContent=d.ord;
 t.textContent=d.tilt.toFixed(0);gz.textContent=d.gz.toFixed(1);
 a.textContent=d.ax.toFixed(2)+' / '+d.ay.toFixed(2)+' / '+d.az.toFixed(2);
 g.textContent=d.gx.toFixed(1)+' / '+d.gy.toFixed(1)+' / '+d.gz.toFixed(1);}catch(e){}}
@@ -181,7 +199,7 @@ String jsonData() {
   String s = "{\"freq\":" + String(g_peakFreq,1) + ",\"mag\":" + String(g_peakMag,0);
   s += ",\"hfreq\":" + String(g_holdFreq,1) + ",\"hmag\":" + String(g_holdMag,0);
   s += ",\"imu\":\"" + (imuAddr ? String("0x")+String(imuWho,HEX) : String("")) + "\"";
-  s += ",\"bus\":\"" + String(g_i2c) + "\"";
+  s += ",\"bus\":\"" + String(g_i2c) + "\",\"ord\":\"" + String(g_order) + "\"";
   s += ",\"tilt\":" + String(g_tilt,1) + ",\"ax\":" + String(g_ax,2) + ",\"ay\":" + String(g_ay,2) + ",\"az\":" + String(g_az,2);
   s += ",\"gx\":" + String(g_gx,1) + ",\"gy\":" + String(g_gy,1) + ",\"gz\":" + String(g_gz,1);
   s += ",\"wave\":[";
@@ -194,10 +212,20 @@ String jsonData() {
 
 void setup() {
   Serial.begin(115200);
-  WiFi.mode(WIFI_AP);
+  WiFi.mode(WIFI_AP_STA);                       // и своя точка, и домашняя сеть
   WiFi.softAP(AP_SSID, strlen(AP_PASS) >= 8 ? AP_PASS : nullptr);
   Serial.print("AP \""); Serial.print(AP_SSID);
   Serial.print("\" -> http://"); Serial.println(WiFi.softAPIP());
+
+  if (strlen(STA_SSID)) {                        // подключение к домашнему Wi-Fi
+    WiFi.begin(STA_SSID, STA_PASS);
+    for (int i = 0; i < 40 && WiFi.status() != WL_CONNECTED; i++) delay(250);
+    if (WiFi.status() == WL_CONNECTED) {
+      g_staIp = WiFi.localIP().toString();
+      Serial.print("Дом. сеть -> http://"); Serial.println(g_staIp);
+    } else Serial.println("Дом. сеть: не подключился (проверь имя/пароль)");
+  }
+  if (MDNS.begin("coil-scope")) Serial.println("mDNS: http://coil-scope.local/");
 
   server.on("/", []() { server.send(200, "text/html", PAGE); });
   server.on("/data", []() { server.send(200, "application/json", jsonData()); });
