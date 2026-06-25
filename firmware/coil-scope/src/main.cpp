@@ -1,16 +1,17 @@
-// coil-scope — «осциллограф из ESP32» для родного сигнала провода периметра.
-// Катушка (из витой пары) → GPIO36 (ADC1_CH0). Питание — повербанк по USB.
+// coil-scope / пассажир-разведчик — ESP32 слушает мир, смотрим с телефона.
+//  • Катушка (витая пара) → GPIO36 (ADC1): сигнал провода — форма, спектр, частота.
+//  • IMU LSM6DS3 по I2C (SDA=21, SCL=22): наклон + угловая скорость (гироскоп).
 //
-// СМОТРИМ ПРЯМО С ТЕЛЕФОНА: ESP поднимает свою Wi-Fi точку (без домашнего роутера).
-//   1) подключись телефоном к сети  "coil-scope"  (пароль: mower1234)
-//   2) открой в браузере  http://192.168.4.1/
-//   3) води катушкой у провода/базы — смотри форму, спектр и пиковую частоту.
+// КАК СМОТРЕТЬ: подключись телефоном к Wi-Fi "coil-scope" (пароль mower1234),
+//              открой http://192.168.4.1/
 //
-// ВЕРСИЯ 2 (AP-режим). Цель — увидеть ЕСТЬ ли сигнал, на какой ЧАСТОТЕ, и форму.
+// IMU LSM6DS3: VIN→3V3, GND→GND, SCL→22, SDA→21, CS→3V3 (режим I2C). Остальное не нужно.
+// ВЕРСИЯ 3 (AP + IMU).
 
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WebServer.h>
+#include <Wire.h>
 #include <arduinoFFT.h>
 #include <driver/i2s.h>
 #include <driver/adc.h>
@@ -19,23 +20,65 @@
 const char* AP_SSID = "coil-scope";
 const char* AP_PASS = "mower1234";     // мин. 8 символов; "" = открытая сеть
 
-// --- АЦП/выборка ---
+// --- АЦП/выборка катушки ---
 static const adc1_channel_t ADC_CH = ADC1_CHANNEL_0;   // GPIO36 (VP)
 static const i2s_port_t I2S_PORT  = I2S_NUM_0;
-static const uint32_t SAMPLE_RATE = 80000;             // Гц → Найквист 40 кГц
-static const uint16_t SAMPLES     = 1024;              // окно FFT (бин = 78.1 Гц)
+static const uint32_t SAMPLE_RATE = 80000;
+static const uint16_t SAMPLES     = 1024;
 
-double vReal[SAMPLES];
-double vImag[SAMPLES];
+// --- I2C / IMU ---
+static const int PIN_SDA = 21, PIN_SCL = 22;
+uint8_t  imuAddr = 0;           // 0 = не найден; иначе 0x6A/0x6B
+uint8_t  imuWho  = 0;           // WHO_AM_I
+float    g_ax=0, g_ay=0, g_az=0;       // g
+float    g_gx=0, g_gy=0, g_gz=0;       // dps
+float    g_tilt=0;                     // угол от вертикали, °
+
+double vReal[SAMPLES], vImag[SAMPLES];
 ArduinoFFT<double> FFT = ArduinoFFT<double>(vReal, vImag, SAMPLES, (double)SAMPLE_RATE);
-
 volatile double g_peakFreq = 0, g_peakMag = 0;
-uint16_t g_wave[256];
-uint16_t g_spec[256];
+uint16_t g_wave[256], g_spec[256];
 
 WebServer server(80);
 
-// ---------- I2S ADC ----------
+// =================== IMU (LSM6DS3) ===================
+void imuWrite(uint8_t reg, uint8_t val) {
+  Wire.beginTransmission(imuAddr); Wire.write(reg); Wire.write(val); Wire.endTransmission();
+}
+uint8_t imuRead8(uint8_t addr, uint8_t reg) {
+  Wire.beginTransmission(addr); Wire.write(reg); Wire.endTransmission(false);
+  Wire.requestFrom((int)addr, 1);
+  return Wire.available() ? Wire.read() : 0;
+}
+int16_t imuRead16(uint8_t reg) {
+  Wire.beginTransmission(imuAddr); Wire.write(reg); Wire.endTransmission(false);
+  Wire.requestFrom((int)imuAddr, 2);
+  uint8_t lo = Wire.read(), hi = Wire.read();
+  return (int16_t)((hi << 8) | lo);
+}
+void imuSetup() {
+  Wire.begin(PIN_SDA, PIN_SCL);
+  Wire.setClock(400000);
+  for (uint8_t a = 0x6A; a <= 0x6B; a++) {
+    uint8_t who = imuRead8(a, 0x0F);          // WHO_AM_I
+    if (who == 0x69 || who == 0x6A) { imuAddr = a; imuWho = who; break; }
+  }
+  if (!imuAddr) return;
+  imuWrite(0x10, 0x60);   // CTRL1_XL: акс 104 Гц, ±2g
+  imuWrite(0x11, 0x60);   // CTRL2_G:  гиро 104 Гц, 245 dps
+}
+void imuPoll() {
+  if (!imuAddr) return;
+  g_gx = imuRead16(0x22) * 8.75f / 1000.0f;   // dps
+  g_gy = imuRead16(0x24) * 8.75f / 1000.0f;
+  g_gz = imuRead16(0x26) * 8.75f / 1000.0f;
+  g_ax = imuRead16(0x28) * 0.061f / 1000.0f;  // g
+  g_ay = imuRead16(0x2A) * 0.061f / 1000.0f;
+  g_az = imuRead16(0x2C) * 0.061f / 1000.0f;
+  g_tilt = atan2f(sqrtf(g_ax*g_ax + g_ay*g_ay), g_az) * 57.2958f;
+}
+
+// =================== АЦП катушки ===================
 void adcSetup() {
   i2s_config_t cfg = {
     .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX | I2S_MODE_ADC_BUILT_IN),
@@ -44,9 +87,7 @@ void adcSetup() {
     .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
     .communication_format = I2S_COMM_FORMAT_STAND_I2S,
     .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
-    .dma_buf_count = 4,
-    .dma_buf_len = 256,
-    .use_apll = false,
+    .dma_buf_count = 4, .dma_buf_len = 256, .use_apll = false,
   };
   adc1_config_width(ADC_WIDTH_BIT_12);
   adc1_config_channel_atten(ADC_CH, ADC_ATTEN_DB_11);
@@ -54,7 +95,6 @@ void adcSetup() {
   i2s_set_adc_mode(ADC_UNIT_1, ADC_CH);
   i2s_adc_enable(I2S_PORT);
 }
-
 void sampleBlock() {
   static uint16_t buf[SAMPLES];
   size_t bytesRead = 0, need = SAMPLES * sizeof(uint16_t), got = 0;
@@ -62,12 +102,8 @@ void sampleBlock() {
     i2s_read(I2S_PORT, ((uint8_t*)buf) + got, need - got, &bytesRead, portMAX_DELAY);
     got += bytesRead;
   }
-  for (uint16_t i = 0; i < SAMPLES; i++) {
-    vReal[i] = (double)(buf[i] & 0x0FFF);
-    vImag[i] = 0.0;
-  }
+  for (uint16_t i = 0; i < SAMPLES; i++) { vReal[i] = (double)(buf[i] & 0x0FFF); vImag[i] = 0.0; }
 }
-
 void analyzeBlock() {
   for (int i = 0; i < 256; i++) g_wave[i] = (uint16_t)vReal[i * (SAMPLES / 256)];
   double mean = 0; for (uint16_t i = 0; i < SAMPLES; i++) mean += vReal[i];
@@ -86,29 +122,38 @@ void analyzeBlock() {
   g_peakMag = maxMag;
 }
 
-// ---------- Веб ----------
+// =================== Веб ===================
 const char* PAGE = R"HTML(<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>coil-scope</title>
 <style>body{font-family:sans-serif;background:#111;color:#eee;margin:8px}
-canvas{background:#000;display:block;margin:6px 0;width:100%;height:160px}
-b{color:#6f6;font-size:22px}</style>
-<h3>coil-scope — сигнал провода</h3>
-<div>Пиковая частота: <b id=f>—</b> Гц &nbsp; амплитуда: <span id=m>—</span></div>
-<div>Форма сигнала:</div><canvas id=w width=512 height=160></canvas>
-<div>Спектр (0…40 кГц):</div><canvas id=s width=512 height=160></canvas>
+canvas{background:#000;display:block;margin:6px 0;width:100%;height:150px}
+b{color:#6f6;font-size:22px}.r{color:#9cf}</style>
+<h3>пассажир-разведчик</h3>
+<div>Провод — частота: <b id=f>—</b> Гц &nbsp; амплитуда: <span id=m>—</span></div>
+<div>Форма:</div><canvas id=w width=512 height=150></canvas>
+<div>Спектр (0…40 кГц):</div><canvas id=s width=512 height=150></canvas>
+<h4>IMU <span id=imu class=r></span></h4>
+<div>Наклон: <b id=t>—</b>° &nbsp; угл.скорость Z: <span id=gz>—</span> °/с</div>
+<div class=r>accel g: <span id=a>—</span> &nbsp; gyro °/с: <span id=g>—</span></div>
 <script>
 function draw(c,arr,max){let x=c.getContext('2d'),W=c.width,H=c.height;x.clearRect(0,0,W,H);
 x.strokeStyle='#6f6';x.beginPath();for(let i=0;i<arr.length;i++){let y=H-arr[i]/max*H;
 i?x.lineTo(i/arr.length*W,y):x.moveTo(0,y);}x.stroke();}
 async function tick(){try{let d=await(await fetch('/data')).json();
-document.getElementById('f').textContent=d.freq.toFixed(0);
-document.getElementById('m').textContent=d.mag.toFixed(0);
-draw(document.getElementById('w'),d.wave,4096);
-draw(document.getElementById('s'),d.spec,Math.max(...d.spec,1));}catch(e){}}
+f.textContent=d.freq.toFixed(0);m.textContent=d.mag.toFixed(0);
+draw(w,d.wave,4096);draw(s,d.spec,Math.max(...d.spec,1));
+imu.textContent=d.imu?('('+d.imu+')'):'НЕ НАЙДЕН';
+t.textContent=d.tilt.toFixed(0);gz.textContent=d.gz.toFixed(1);
+a.textContent=d.ax.toFixed(2)+' / '+d.ay.toFixed(2)+' / '+d.az.toFixed(2);
+g.textContent=d.gx.toFixed(1)+' / '+d.gy.toFixed(1)+' / '+d.gz.toFixed(1);}catch(e){}}
 setInterval(tick,300);tick();
 </script>)HTML";
 
 String jsonData() {
-  String s = "{\"freq\":" + String(g_peakFreq, 1) + ",\"mag\":" + String(g_peakMag, 0) + ",\"wave\":[";
+  String s = "{\"freq\":" + String(g_peakFreq,1) + ",\"mag\":" + String(g_peakMag,0);
+  s += ",\"imu\":\"" + (imuAddr ? String("0x")+String(imuWho,HEX) : String("")) + "\"";
+  s += ",\"tilt\":" + String(g_tilt,1) + ",\"ax\":" + String(g_ax,2) + ",\"ay\":" + String(g_ay,2) + ",\"az\":" + String(g_az,2);
+  s += ",\"gx\":" + String(g_gx,1) + ",\"gy\":" + String(g_gy,1) + ",\"gz\":" + String(g_gz,1);
+  s += ",\"wave\":[";
   for (int i = 0; i < 256; i++) { s += g_wave[i]; if (i < 255) s += ','; }
   s += "],\"spec\":[";
   for (int i = 0; i < 256; i++) { s += g_spec[i]; if (i < 255) s += ','; }
@@ -118,29 +163,30 @@ String jsonData() {
 
 void setup() {
   Serial.begin(115200);
-
   WiFi.mode(WIFI_AP);
   WiFi.softAP(AP_SSID, strlen(AP_PASS) >= 8 ? AP_PASS : nullptr);
   Serial.print("AP \""); Serial.print(AP_SSID);
-  Serial.print("\"  ->  http://"); Serial.println(WiFi.softAPIP());  // 192.168.4.1
+  Serial.print("\" -> http://"); Serial.println(WiFi.softAPIP());
 
   server.on("/", []() { server.send(200, "text/html", PAGE); });
   server.on("/data", []() { server.send(200, "application/json", jsonData()); });
   server.begin();
 
+  imuSetup();
+  if (imuAddr) Serial.printf("IMU LSM6DS3 на 0x%02X (WHO=0x%02X)\n", imuAddr, imuWho);
+  else         Serial.println("IMU не найден (проверь SDA=21/SCL=22, CS->3V3, питание)");
   adcSetup();
 }
 
+uint32_t lastImu = 0;
 void loop() {
   sampleBlock();
   analyzeBlock();
+  if (millis() - lastImu > 100) { lastImu = millis(); imuPoll(); }
   server.handleClient();
 }
 
-// ----------------- ЗАМЕТКИ ПО ИТЕРАЦИИ -----------------
-// 1) Пусто/шум в спектре: поднеси катушку ближе к проводу, поверни её, добавь витков.
-// 2) Без ОУ АЦП не видит нижнюю полуволну — частоту это не скрывает (пик в FFT есть),
-//    форма обрезана снизу. Полную форму добудем смещением Vcc/2 (2 резистора) позже.
-// 3) Пик «прилип» к краю/нулю — поменяй SAMPLE_RATE (40000/100000), скажи — пересоберу.
-// 4) Странные значения (перемешанные дорожки) — нюанс маски АЦП (buf[i]&0x0FFF) — скажу поправлю.
-// 5) Нужен MQTT в Home Assistant — добавим STA-режим (подключение к домашней сети) отдельно.
+// ----- ЗАМЕТКИ -----
+// IMU "НЕ НАЙДЕН": проверь CS→3V3 (без этого чип в SPI), SDA=21/SCL=22, VIN→3V3.
+// Сигнал провода слабый: ближе к проводу/базе, поверни катушку, добавь витков.
+// Частота вне диапазона: скажи — пересоберу с другим SAMPLE_RATE.
