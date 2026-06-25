@@ -37,7 +37,11 @@ float    g_tilt=0;                     // угол от вертикали, °
 double vReal[SAMPLES], vImag[SAMPLES];
 ArduinoFFT<double> FFT = ArduinoFFT<double>(vReal, vImag, SAMPLES, (double)SAMPLE_RATE);
 volatile double g_peakFreq = 0, g_peakMag = 0;
+volatile double g_holdFreq = 0, g_holdMag = 0;   // удержание максимума
+uint32_t g_holdT = 0;
 uint16_t g_wave[256], g_spec[256];
+// окно поиска пика: игнор сети (<300 Гц) и артефакта у Найквиста (>38 кГц)
+static const double F_MIN = 300.0, F_MAX = 38000.0;
 
 WebServer server(80);
 
@@ -112,14 +116,22 @@ void analyzeBlock() {
   FFT.windowing(FFTWindow::Hamming, FFTDirection::Forward);
   FFT.compute(FFTDirection::Forward);
   FFT.complexToMagnitude();
-  g_peakFreq = FFT.majorPeak();
-  double maxMag = 0;
-  for (int i = 0; i < 256; i++) {
-    double m = vReal[1 + i * 2];
-    g_spec[i] = (uint16_t)constrain(m, 0, 65535);
-    if (m > maxMag) maxMag = m;
+
+  // пик ищем вручную в окне [F_MIN..F_MAX] — мимо сети 50 Гц и артефакта у 40 кГц
+  const double binHz = (double)SAMPLE_RATE / SAMPLES;     // 78.125 Гц/бин
+  int bMin = (int)(F_MIN / binHz), bMax = (int)(F_MAX / binHz);
+  double pkMag = 0; int pkBin = bMin;
+  for (int b = bMin; b < bMax; b++) if (vReal[b] > pkMag) { pkMag = vReal[b]; pkBin = b; }
+  g_peakFreq = pkBin * binHz;
+  g_peakMag  = pkMag;
+
+  // удержание максимума ~3 с (чтобы реальный пик не терялся в дрожании)
+  if (pkMag > g_holdMag || millis() - g_holdT > 3000) {
+    g_holdMag = pkMag; g_holdFreq = g_peakFreq; g_holdT = millis();
   }
-  g_peakMag = maxMag;
+
+  for (int i = 0; i < 256; i++)
+    g_spec[i] = (uint16_t)constrain(vReal[1 + i * 2], 0, 65535);
 }
 
 // =================== Веб ===================
@@ -129,6 +141,7 @@ canvas{background:#000;display:block;margin:6px 0;width:100%;height:150px}
 b{color:#6f6;font-size:22px}.r{color:#9cf}</style>
 <h3>пассажир-разведчик</h3>
 <div>Провод — частота: <b id=f>—</b> Гц &nbsp; амплитуда: <span id=m>—</span></div>
+<div class=r>макс за 3с: <span id=hf>—</span> Гц (ампл <span id=hm>—</span>)</div>
 <div>Форма:</div><canvas id=w width=512 height=150></canvas>
 <div>Спектр (0…40 кГц):</div><canvas id=s width=512 height=150></canvas>
 <h4>IMU <span id=imu class=r></span></h4>
@@ -140,6 +153,7 @@ x.strokeStyle='#6f6';x.beginPath();for(let i=0;i<arr.length;i++){let y=H-arr[i]/
 i?x.lineTo(i/arr.length*W,y):x.moveTo(0,y);}x.stroke();}
 async function tick(){try{let d=await(await fetch('/data')).json();
 f.textContent=d.freq.toFixed(0);m.textContent=d.mag.toFixed(0);
+hf.textContent=d.hfreq.toFixed(0);hm.textContent=d.hmag.toFixed(0);
 draw(w,d.wave,4096);draw(s,d.spec,Math.max(...d.spec,1));
 imu.textContent=d.imu?('('+d.imu+')'):'НЕ НАЙДЕН';
 t.textContent=d.tilt.toFixed(0);gz.textContent=d.gz.toFixed(1);
@@ -150,6 +164,7 @@ setInterval(tick,300);tick();
 
 String jsonData() {
   String s = "{\"freq\":" + String(g_peakFreq,1) + ",\"mag\":" + String(g_peakMag,0);
+  s += ",\"hfreq\":" + String(g_holdFreq,1) + ",\"hmag\":" + String(g_holdMag,0);
   s += ",\"imu\":\"" + (imuAddr ? String("0x")+String(imuWho,HEX) : String("")) + "\"";
   s += ",\"tilt\":" + String(g_tilt,1) + ",\"ax\":" + String(g_ax,2) + ",\"ay\":" + String(g_ay,2) + ",\"az\":" + String(g_az,2);
   s += ",\"gx\":" + String(g_gx,1) + ",\"gy\":" + String(g_gy,1) + ",\"gz\":" + String(g_gz,1);
