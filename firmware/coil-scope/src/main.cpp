@@ -172,6 +172,7 @@ const char* PAGE = R"HTML(<!doctype html><meta charset=utf-8><meta name=viewport
 canvas{background:#000;display:block;margin:6px 0;width:100%;height:150px}
 b{color:#6f6;font-size:22px}.r{color:#9cf}</style>
 <h3>пассажир-разведчик</h3>
+<div class=r>дом. сеть: <span id=ip>—</span> &nbsp; (или http://coil-scope.local/)</div>
 <div>Провод — частота: <b id=f>—</b> Гц &nbsp; амплитуда: <span id=m>—</span></div>
 <div class=r>макс за 3с: <span id=hf>—</span> Гц (ампл <span id=hm>—</span>)</div>
 <div>Форма:</div><canvas id=w width=512 height=150></canvas>
@@ -185,7 +186,7 @@ function draw(c,arr,max){let x=c.getContext('2d'),W=c.width,H=c.height;x.clearRe
 x.strokeStyle='#6f6';x.beginPath();for(let i=0;i<arr.length;i++){let y=H-arr[i]/max*H;
 i?x.lineTo(i/arr.length*W,y):x.moveTo(0,y);}x.stroke();}
 async function tick(){try{let d=await(await fetch('/data')).json();
-f.textContent=d.freq.toFixed(0);m.textContent=d.mag.toFixed(0);
+ip.textContent=d.ip;f.textContent=d.freq.toFixed(0);m.textContent=d.mag.toFixed(0);
 hf.textContent=d.hfreq.toFixed(0);hm.textContent=d.hmag.toFixed(0);
 draw(w,d.wave,4096);draw(s,d.spec,Math.max(...d.spec,1));
 imu.textContent=d.imu?('('+d.imu+')'):'НЕ НАЙДЕН';bus.textContent=d.bus;ord.textContent=d.ord;
@@ -196,7 +197,7 @@ setInterval(tick,300);tick();
 </script>)HTML";
 
 String jsonData() {
-  String s = "{\"freq\":" + String(g_peakFreq,1) + ",\"mag\":" + String(g_peakMag,0);
+  String s = "{\"ip\":\"" + g_staIp + "\",\"freq\":" + String(g_peakFreq,1) + ",\"mag\":" + String(g_peakMag,0);
   s += ",\"hfreq\":" + String(g_holdFreq,1) + ",\"hmag\":" + String(g_holdMag,0);
   s += ",\"imu\":\"" + (imuAddr ? String("0x")+String(imuWho,HEX) : String("")) + "\"";
   s += ",\"bus\":\"" + String(g_i2c) + "\",\"ord\":\"" + String(g_order) + "\"";
