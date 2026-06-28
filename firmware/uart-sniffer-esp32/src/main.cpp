@@ -88,7 +88,8 @@ b{color:#fff}.b{display:inline-block;background:#225;color:#fff;padding:6px 9px;
 <div>baud:
 <a class=b href="/baud?b=9600">9600</a><a class=b href="/baud?b=19200">19200</a>
 <a class=b href="/baud?b=38400">38400</a><a class=b href="/baud?b=57600">57600</a>
-<a class=b href="/baud?b=115200">115200</a></div>
+<a class=b href="/baud?b=115200">115200</a><a class=b href="/baud?b=230400">230400</a>
+<a class=b href="/baud?b=921600">921600</a></div>
 <div id=log></div>
 <script>
 async function tick(){try{let d=await(await fetch('/data')).json();
