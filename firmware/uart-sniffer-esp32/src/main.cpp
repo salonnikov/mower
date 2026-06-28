@@ -51,7 +51,7 @@ void addLine(const String& s) { lines[lhead] = s; lhead = (lhead + 1) % NLINES; 
 void emit(char ch, uint8_t* buf, int len, uint32_t t) {
   String hex; char h[4];
   for (int i = 0; i < len; i++) { snprintf(h, 4, "%02X ", buf[i]); hex += h; }
-  String line = String(ch) + " " + String(t) + " " + hex;
+  String line = String(ch) + " b" + String(g_baud) + " " + String(t) + " " + hex;
   addLine(line);
   if (logClient.connected()) logClient.println(line);
 }
@@ -140,6 +140,11 @@ void setup() {
 }
 
 void loop() {
+  // авто-перебор baud по кругу (~1.6 с на каждый) — найдём правильный по логу
+  static const uint32_t BAUDS[] = {9600, 19200, 38400, 57600, 115200, 230400, 921600};
+  static uint32_t lastSwap = 0; static int bi = 4;
+  if (millis() - lastSwap > 1600) { lastSwap = millis(); bi = (bi + 1) % 7; applyBaud(BAUDS[bi]); }
+
   pump(S_A, bufA, lenA, tA, 'A', cntA);
   pump(S_B, bufB, lenB, tB, 'B', cntB);
   ensureLog();
