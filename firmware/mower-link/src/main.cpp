@@ -30,6 +30,10 @@
   #define LOG_HOST ""
   #define LOG_PORT 9000
 #endif
+#ifndef BRIDGE_HOST
+  #define BRIDGE_HOST ""
+  #define BRIDGE_PORT 7777
+#endif
 
 const char* AP_SSID = "mower-link";
 const char* AP_PASS = "mower1234";
@@ -44,8 +48,8 @@ HardwareSerial SerT(2);   // SNIFF: RX=16 (канал A);  BRIDGE: RX=16/TX=17 (
 HardwareSerial SerR(1);   // SNIFF: RX=17 (канал B)
 
 WebServer server(80);
-WiFiServer bridgeServer(3333);
-WiFiClient bridgeClient, logClient;
+WiFiClient bridgeClient, logClient;   // bridgeClient = ИСХОДЯЩИЙ дозвон на сервер
+uint32_t lastBridge = 0;
 volatile uint32_t cntA = 0, cntB = 0;
 
 uint8_t bA[256]; int lA = 0; uint32_t tA = 0;
@@ -79,7 +83,8 @@ void setBridge(){
   SerR.end();
   pinMode(PIN_P, OUTPUT); digitalWrite(PIN_P, LOW);   // держим IO0 косилкиной ESP низким
   SerT.begin(115200, SERIAL_8N1, PIN_T, PIN_R);       // двунаправленно к ESP косилки
-  bridgeServer.begin();
+  if(bridgeClient.connected()) bridgeClient.stop();
+  lastBridge = 0;                                     // дозвон на сервер в loop()
 }
 
 uint32_t lastTcp=0;
@@ -103,10 +108,9 @@ b{color:#fff}.b{display:inline-block;background:#225;color:#fff;padding:7px 11px
  <div id=log></div>
 </div>
 <div id=br style=display:none>
- <p>BRIDGE активен. P(IO0) держится в GND.</p>
- <p>1) ПЕРЕДЁРНИ питание косилки (ESP уйдёт в загрузчик).<br>
- 2) На сервере: esptool --before no_reset --after no_reset --chip esp32 --port socket://IP:3333 read_flash 0 0x400000 mower-esp.bin</p>
- <p>клиент моста:<b id=bc>—</b></p>
+ <p>BRIDGE активен. P(IO0) держится в GND, мост дозванивается на сервер.</p>
+ <p>связь с сервером:<b id=bc>—</b></p>
+ <p>Теперь просто <b>ПЕРЕДЁРНИ питание косилки</b> — дамп снимется на сервере автоматически.</p>
 </div>
 <script>
 async function tick(){try{let d=await(await fetch('/data')).json();
@@ -154,11 +158,16 @@ void loop(){
     pump(SerT,bA,lA,tA,'A',cntA);
     pump(SerR,bB,lB,tB,'B',cntB);
     ensureLog();
-  } else { // BRIDGE
-    if(!bridgeClient || !bridgeClient.connected()) bridgeClient=bridgeServer.available();
-    if(bridgeClient && bridgeClient.connected()){
+  } else { // BRIDGE: дозваниваемся на сервер и мостим UART<->сокет
+    if(!bridgeClient.connected()){
+      if(strlen(BRIDGE_HOST) && millis()-lastBridge>2000){
+        lastBridge=millis(); bridgeClient.connect(BRIDGE_HOST, BRIDGE_PORT);
+      }
+      while(SerT.available()) SerT.read();   // нет связи — сливаем
+    }
+    if(bridgeClient.connected()){
       while(bridgeClient.available()) SerT.write(bridgeClient.read());
       while(SerT.available()) bridgeClient.write(SerT.read());
-    } else { while(SerT.available()) SerT.read(); }
+    }
   }
 }
