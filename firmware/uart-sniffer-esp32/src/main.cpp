@@ -79,23 +79,36 @@ void ensureLog() {
   logClient.connect(LOG_HOST, LOG_PORT);
 }
 
-const char* PAGE = R"HTML(<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>mower-sniff2</title>
-<style>body{font-family:monospace;background:#111;color:#6f6;margin:8px;font-size:12px}
-b{color:#fff}.b{display:inline-block;background:#225;color:#fff;padding:6px 9px;margin:2px;border-radius:5px;text-decoration:none}
-#log{white-space:pre-wrap;word-break:break-all}.A{color:#6cf}.B{color:#fc6}</style>
-<h3>UART-сниффер (A=T дисплей→мейн, B=R мейн→дисплей)</h3>
-<div>baud:<b id=bd>—</b> дом:<span id=ip>—</span> TCP:<b id=tcp>—</b> A:<b id=ca>0</b> B:<b id=cb>0</b></div>
-<div>baud:
-<a class=b href="/baud?b=9600">9600</a><a class=b href="/baud?b=19200">19200</a>
-<a class=b href="/baud?b=38400">38400</a><a class=b href="/baud?b=57600">57600</a>
-<a class=b href="/baud?b=115200">115200</a><a class=b href="/baud?b=230400">230400</a>
-<a class=b href="/baud?b=921600">921600</a></div>
-<div id=log></div>
+const char* PAGE = R"HTML(<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>mower-sniff</title>
+<style>body{font-family:system-ui,sans-serif;background:#0e1116;color:#cdd9e5;margin:0;padding:14px}
+h2{margin:0 0 12px}.row{display:flex;gap:10px;flex-wrap:wrap}
+.card{background:#171c24;border:1px solid #2a313c;border-radius:10px;padding:12px;flex:1;min-width:130px}
+.k{color:#7a869a;font-size:12px}.v{font-size:20px;font-weight:600;margin-top:4px}
+.ok{color:#3fb950}.no{color:#f85149}.warn{color:#d29922}
+pre{background:#0a0d12;border:1px solid #2a313c;border-radius:8px;padding:10px;max-height:200px;overflow:auto;font-size:12px;white-space:pre-wrap;word-break:break-all}
+.A{color:#6cf}.B{color:#fc6}</style>
+<h2>📡 mower-sniff — состояние</h2>
+<div class=row>
+ <div class=card><div class=k>Режим</div><div class=v>Сниффер @<span id=bd>—</span></div></div>
+ <div class=card><div class=k>Wi-Fi (<span id=ssid>—</span>)</div><div class=v id=rssi>—</div></div>
+ <div class=card><div class=k>Связь с сервером</div><div class=v id=tcp>—</div></div>
+ <div class=card><div class=k>Ошибки</div><div class=v id=err>нет</div></div>
+</div>
+<div class=row style=margin-top:10px>
+ <div class=card><div class=k>Канал ↑ (A, GPIO17)</div><div class=v id=ca>0 Б</div></div>
+ <div class=card><div class=k>Канал ↓ (B, GPIO16)</div><div class=v id=cb>0 Б</div></div>
+</div>
+<div class=card style=margin-top:10px><div class=k>Живые кадры (расшифровано)</div><pre id=log></pre></div>
 <script>
+function asc(parts){return parts.slice(3).map(h=>{let c=parseInt(h,16);return(c>=32&&c<127)?String.fromCharCode(c):'.';}).join('');}
 async function tick(){try{let d=await(await fetch('/data')).json();
-bd.textContent=d.baud;ip.textContent=d.ip;tcp.textContent=d.tcp?'OK':'нет';
-ca.textContent=d.a;cb.textContent=d.b;
-log.innerHTML=d.lines.map(l=>'<span class="'+l[0]+'">'+l+'</span>').join('\n');
+ bd.textContent=d.baud;ssid.textContent=d.ssid;ip&&0;
+ rssi.innerHTML=d.ip!='—'?('<span class="'+(d.rssi>-67?'ok':d.rssi>-80?'warn':'no')+'">'+d.rssi+' dBm</span>'):'<span class=no>нет сети</span>';
+ tcp.innerHTML=d.tcp?'<span class=ok>OK</span>':'<span class=no>нет</span>';
+ let e=[]; if(d.ip=='—')e.push('нет Wi-Fi'); if(!d.tcp)e.push('нет сервера'); if(d.a==0&&d.b==0)e.push('нет данных от косилки');
+ err.innerHTML=e.length?'<span class=warn>'+e.join(', ')+'</span>':'<span class=ok>нет</span>';
+ ca.textContent=d.a.toLocaleString()+' Б';cb.textContent=d.b.toLocaleString()+' Б';
+ log.innerHTML=d.lines.map(l=>{let p=l.split(' ');return '<span class="'+p[0]+'">'+p[0]+': '+asc(p)+'</span>';}).join('\n');
 }catch(e){}}
 setInterval(tick,400);tick();
 </script>)HTML";
@@ -144,4 +157,13 @@ void loop() {
   pump(S_B, bufB, lenB, tB, 'B', cntB);
   ensureLog();
   server.handleClient();
+
+  static uint32_t lastStatus = 0;          // статус на сервер раз в 2 с
+  if (millis() - lastStatus > 2000) {
+    lastStatus = millis();
+    if (logClient.connected())
+      logClient.println("S {\"rssi\":" + String(WiFi.RSSI()) + ",\"ssid\":\"" + WiFi.SSID() +
+                        "\",\"ip\":\"" + g_staIp + "\",\"baud\":" + String(g_baud) +
+                        ",\"a\":" + String(cntA) + ",\"b\":" + String(cntB) + "}");
+  }
 }
