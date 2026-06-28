@@ -83,7 +83,7 @@ void emit(char ch, uint8_t* buf, int len, uint32_t t) {
   for (int i = 0; i < len; i++) { snprintf(h, 4, "%02X ", buf[i]); hex += h; }
   String line = String(ch) + " b" + String(g_baud) + " " + String(t) + " " + hex;
   addLine(line);
-  bufPush(line);
+  if (logClient.connected()) logClient.println(line);
 }
 
 void pump(HardwareSerial& S, uint8_t* buf, int& len, uint32_t& t, char ch, volatile uint32_t& cnt) {
@@ -96,8 +96,6 @@ void pump(HardwareSerial& S, uint8_t* buf, int& len, uint32_t& t, char ch, volat
 
 void applyBaud(uint32_t b) {
   g_baud = b;
-  S_A.end(); S_B.end();
-  S_A.setRxBufferSize(8192); S_B.setRxBufferSize(8192);   // большой RX на прерываниях — переживает подвисания сети
   S_A.begin(b, SERIAL_8N1, RX_A, -1);   // только RX
   S_B.begin(b, SERIAL_8N1, RX_B, -1);
   cntA = cntB = 0; lenA = lenB = 0;
@@ -188,15 +186,14 @@ void loop() {
   pump(S_A, bufA, lenA, tA, 'A', cntA);
   pump(S_B, bufB, lenB, tB, 'B', cntB);
   ensureLog();
-  bufDrain();
   server.handleClient();
 
-  static uint32_t lastStatus = 0;          // статус в буфер раз в 2 с
+  static uint32_t lastStatus = 0;          // статус на сервер раз в 2 с
   if (millis() - lastStatus > 2000) {
     lastStatus = millis();
-    bufPush("S {\"rssi\":" + String(WiFi.RSSI()) + ",\"ssid\":\"" + WiFi.SSID() +
-            "\",\"ip\":\"" + g_staIp + "\",\"baud\":" + String(g_baud) +
-            ",\"a\":" + String(cntA) + ",\"b\":" + String(cntB) +
-            ",\"buf\":" + String(bufUsed()) + ",\"drop\":" + String(g_drop) + "}");
+    if (logClient.connected())
+      logClient.println("S {\"rssi\":" + String(WiFi.RSSI()) + ",\"ssid\":\"" + WiFi.SSID() +
+                        "\",\"ip\":\"" + g_staIp + "\",\"baud\":" + String(g_baud) +
+                        ",\"a\":" + String(cntA) + ",\"b\":" + String(cntB) + "}");
   }
 }
