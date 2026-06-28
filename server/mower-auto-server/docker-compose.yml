@@ -15,9 +15,11 @@ services:
     ports:
       - "7777:7777"   # data (мост UART)
       - "7778:7778"   # control (P)
+      - "8080:8080"   # веб-дашборд
     environment:
       - DATA_PORT=7777
       - CTRL_PORT=7778
+      - WEB_PORT=8080
       - OUT=/out
     volumes:
       - ./out:/out
