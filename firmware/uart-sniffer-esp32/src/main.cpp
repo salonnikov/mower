@@ -33,8 +33,8 @@ const char* AP_PASS = "mower1234";
 
 HardwareSerial S_A(1);     // канал A: J1 T
 HardwareSerial S_B(2);     // канал B: J1 R
-const int RX_A = 4, RX_B = 16;
-uint32_t g_baud = 115200;
+const int RX_A = 17, RX_B = 16;   // A=стрелка ↑ (GPIO17), B=стрелка ↓ (GPIO16)
+uint32_t g_baud = 230400;         // НАЙДЕНО: протокол JSON на 230400
 
 WebServer server(80);
 WiFiClient logClient;
@@ -140,11 +140,6 @@ void setup() {
 }
 
 void loop() {
-  // авто-перебор baud по кругу (~1.6 с на каждый) — найдём правильный по логу
-  static const uint32_t BAUDS[] = {9600, 19200, 38400, 57600, 115200, 230400, 921600};
-  static uint32_t lastSwap = 0; static int bi = 4;
-  if (millis() - lastSwap > 1600) { lastSwap = millis(); bi = (bi + 1) % 7; applyBaud(BAUDS[bi]); }
-
   pump(S_A, bufA, lenA, tA, 'A', cntA);
   pump(S_B, bufB, lenB, tB, 'B', cntB);
   ensureLog();
