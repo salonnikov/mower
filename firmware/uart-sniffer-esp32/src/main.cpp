@@ -38,6 +38,33 @@ uint32_t g_baud = 230400;         // НАЙДЕНО: протокол JSON на 
 
 WebServer server(80);
 WiFiClient logClient;
+
+// --- кольцевой буфер исходящего: переживает обрывы Wi-Fi ---
+#define OBUF 40000
+static uint8_t obuf[OBUF];
+static int ohead = 0, otail = 0;
+static uint32_t g_drop = 0;
+int bufUsed() { return (ohead - otail + OBUF) % OBUF; }
+void bufPushByte(uint8_t c) {
+  int nh = (ohead + 1) % OBUF;
+  if (nh == otail) { otail = (otail + 1) % OBUF; g_drop++; }   // переполнение — выкидываем старое
+  obuf[ohead] = c; ohead = nh;
+}
+void bufPush(const String& s) {
+  for (uint16_t i = 0; i < s.length(); i++) bufPushByte((uint8_t)s[i]);
+  bufPushByte('\n');
+}
+void bufDrain() {                          // сливаем буфер на сервер, не блокируя capture
+  if (!logClient.connected()) return;
+  int cap = 600;
+  while (otail != ohead && cap > 0) {
+    int chunk = (ohead > otail) ? (ohead - otail) : (OBUF - otail);
+    if (chunk > cap) chunk = cap;
+    int w = logClient.write(obuf + otail, chunk);
+    if (w <= 0) break;
+    otail = (otail + w) % OBUF; cap -= w;
+  }
+}
 String   g_staIp = "—";
 volatile uint32_t cntA = 0, cntB = 0;
 
@@ -53,7 +80,7 @@ void emit(char ch, uint8_t* buf, int len, uint32_t t) {
   for (int i = 0; i < len; i++) { snprintf(h, 4, "%02X ", buf[i]); hex += h; }
   String line = String(ch) + " b" + String(g_baud) + " " + String(t) + " " + hex;
   addLine(line);
-  if (logClient.connected()) logClient.println(line);
+  bufPush(line);
 }
 
 void pump(HardwareSerial& S, uint8_t* buf, int& len, uint32_t& t, char ch, volatile uint32_t& cnt) {
@@ -156,14 +183,15 @@ void loop() {
   pump(S_A, bufA, lenA, tA, 'A', cntA);
   pump(S_B, bufB, lenB, tB, 'B', cntB);
   ensureLog();
+  bufDrain();
   server.handleClient();
 
-  static uint32_t lastStatus = 0;          // статус на сервер раз в 2 с
+  static uint32_t lastStatus = 0;          // статус в буфер раз в 2 с
   if (millis() - lastStatus > 2000) {
     lastStatus = millis();
-    if (logClient.connected())
-      logClient.println("S {\"rssi\":" + String(WiFi.RSSI()) + ",\"ssid\":\"" + WiFi.SSID() +
-                        "\",\"ip\":\"" + g_staIp + "\",\"baud\":" + String(g_baud) +
-                        ",\"a\":" + String(cntA) + ",\"b\":" + String(cntB) + "}");
+    bufPush("S {\"rssi\":" + String(WiFi.RSSI()) + ",\"ssid\":\"" + WiFi.SSID() +
+            "\",\"ip\":\"" + g_staIp + "\",\"baud\":" + String(g_baud) +
+            ",\"a\":" + String(cntA) + ",\"b\":" + String(cntB) +
+            ",\"buf\":" + String(bufUsed()) + ",\"drop\":" + String(g_drop) + "}");
   }
 }
