@@ -10,7 +10,8 @@ DATA_PORT = int(os.environ.get("DATA_PORT", "9000"))
 WEB_PORT  = int(os.environ.get("WEB_PORT", "8080"))
 OUT = os.environ.get("OUT", "/out"); os.makedirs(OUT, exist_ok=True)
 
-ST = {"connected": False, "last": 0.0, "rssi": 0, "ssid": "—", "ip": "—", "baud": 0, "a": 0, "b": 0}
+ST = {"connected": False, "last": 0.0, "rssi": 0, "ssid": "—", "ip": "—", "baud": 0,
+      "a": 0, "b": 0, "session": "—", "buf": 0, "drop": 0}
 FA, FB = deque(maxlen=25), deque(maxlen=25)   # A=↑(GPIO17), B=↓(GPIO16)
 
 def decode(parts):
@@ -22,8 +23,11 @@ def decode(parts):
     return "".join(out)
 
 def reader(conn):
-    ST["connected"] = True
-    f = open(OUT + "/sniff.log", "ab", buffering=0)
+    sess = time.strftime("session-%Y%m%d-%H%M%S")   # новая сессия на каждое подключение ESP
+    ST["connected"] = True; ST["session"] = sess; ST["a"] = 0; ST["b"] = 0
+    FA.clear(); FB.clear()
+    f = open(OUT + "/" + sess + ".log", "ab", buffering=0)
+    print("новая сессия:", sess, flush=True)
     buf = b""; conn.settimeout(10)
     while True:
         try: d = conn.recv(4096)
@@ -39,7 +43,8 @@ def reader(conn):
                 try:
                     j = json.loads(s[1:].strip())
                     ST.update(rssi=j.get("rssi", 0), ssid=j.get("ssid", "—"), ip=j.get("ip", "—"),
-                              baud=j.get("baud", 0), a=j.get("a", 0), b=j.get("b", 0))
+                              baud=j.get("baud", 0), a=j.get("a", 0), b=j.get("b", 0),
+                              buf=j.get("buf", 0), drop=j.get("drop", 0))
                 except Exception: pass
             elif s[0] in ("A", "B"):
                 p = s.split()
@@ -63,6 +68,7 @@ h2{margin:0 0 12px}.row{display:flex;gap:10px;flex-wrap:wrap}
 pre{background:#0a0d12;border:1px solid #2a313c;border-radius:8px;padding:10px;max-height:240px;overflow:auto;font-size:12px;white-space:pre-wrap;word-break:break-all}
 .A{color:#6cf}.B{color:#fc6}</style>
 <h2>&#128225; mower-sniff &mdash; состояние (сервер)</h2>
+<div style="color:#7a869a;margin-bottom:8px">Сессия: <b id=sess>&mdash;</b> &middot; буфер ESP: <span id=buf>0</span> Б &middot; потеряно: <span id=drop>0</span> Б</div>
 <div class=row>
  <div class=card><div class=k>ESP</div><div class=v id=esp>&mdash;</div></div>
  <div class=card><div class=k>Wi-Fi (<span id=ssid>&mdash;</span>)</div><div class=v id=rssi>&mdash;</div></div>
@@ -83,6 +89,9 @@ async function t(){try{let s=await(await fetch('/state')).json();
  document.getElementById('ssid').textContent=s.ssid;
  document.getElementById('rssi').innerHTML=s.online?('<span class="'+(s.rssi>-67?'ok':s.rssi>-80?'warn':'no')+'">'+s.rssi+' dBm</span>'):'<span class=no>&mdash;</span>';
  document.getElementById('bd').textContent=s.baud;
+ document.getElementById('sess').textContent=s.session;
+ document.getElementById('buf').textContent=s.buf;
+ document.getElementById('drop').textContent=s.drop;
  document.getElementById('ca').textContent=s.a.toLocaleString();
  document.getElementById('cb').textContent=s.b.toLocaleString();
  let e=[]; if(!s.online)e.push('ESP офлайн'); if(s.online&&s.a==0&&s.b==0)e.push('нет данных от косилки');

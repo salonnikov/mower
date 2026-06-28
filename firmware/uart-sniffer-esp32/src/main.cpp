@@ -54,15 +54,18 @@ void bufPush(const String& s) {
   for (uint16_t i = 0; i < s.length(); i++) bufPushByte((uint8_t)s[i]);
   bufPushByte('\n');
 }
-void bufDrain() {                          // сливаем буфер на сервер, не блокируя capture
+void bufDrain() {                          // сливаем буфер, НЕ блокируя capture
   if (!logClient.connected()) return;
-  int cap = 600;
-  while (otail != ohead && cap > 0) {
+  int budget = 2048;
+  while (otail != ohead && budget > 0) {
+    int avail = logClient.availableForWrite();   // сколько влезет без блокировки
+    if (avail <= 0) break;                        // сокет не готов — выходим, не ждём
     int chunk = (ohead > otail) ? (ohead - otail) : (OBUF - otail);
-    if (chunk > cap) chunk = cap;
+    if (chunk > avail) chunk = avail;
+    if (chunk > budget) chunk = budget;
     int w = logClient.write(obuf + otail, chunk);
     if (w <= 0) break;
-    otail = (otail + w) % OBUF; cap -= w;
+    otail = (otail + w) % OBUF; budget -= w;
   }
 }
 String   g_staIp = "—";
@@ -93,6 +96,8 @@ void pump(HardwareSerial& S, uint8_t* buf, int& len, uint32_t& t, char ch, volat
 
 void applyBaud(uint32_t b) {
   g_baud = b;
+  S_A.end(); S_B.end();
+  S_A.setRxBufferSize(8192); S_B.setRxBufferSize(8192);   // большой RX на прерываниях — переживает подвисания сети
   S_A.begin(b, SERIAL_8N1, RX_A, -1);   // только RX
   S_B.begin(b, SERIAL_8N1, RX_B, -1);
   cntA = cntB = 0; lenA = lenB = 0;
