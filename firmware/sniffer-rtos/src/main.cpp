@@ -34,7 +34,7 @@ static inline uint32_t rbUsed() { uint32_t h = rhead, t = rtail; return (h >= t)
 static inline uint32_t rbFree() { return RB - 1 - rbUsed(); }
 
 // --- последние кадры для ЛОКАЛЬНОЙ веб-морды ---
-static const int NREC = 24;
+static const int NREC = 60;
 char recent[NREC][200];
 volatile int recHead = 0;
 volatile uint32_t cntA = 0, cntB = 0;

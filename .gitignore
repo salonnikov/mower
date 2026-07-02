@@ -29,3 +29,10 @@ __pycache__/
 # Node (если появится PWA)
 node_modules/
 dist/
+dist/gd32-mainboard-dump-*.bin
+dist/gd32-mainboard-chip2-dump-*.bin
+
+# Хостовая сборка/тесты прошивки-исполнителя (регенерируются)
+firmware/mower-executor/build/
+# Session-логи дашборда сниффера (транзиентные, большие) — вне git
+server/sniff-dashboard/out/
